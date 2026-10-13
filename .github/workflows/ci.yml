@@ -33,6 +33,6 @@ jobs:
       - run: cargo bench -p raft -p lincheck -- --quick --noplot | tee criterion.txt
       - name: load test (3 nodes in-process)
         run: |
-          echo "### raftkv-load on $(nproc) vCPU GitHub runner" >> "$GITHUB_STEP_SUMMARY"
+          echo "### raftkv-load: $(nproc) vCPU, $(lscpu | sed -n 's/^Model name: *//p')" | tee -a "$GITHUB_STEP_SUMMARY"
           scripts/load.sh 5 | tee -a "$GITHUB_STEP_SUMMARY"
       - run: grep -E "^(raft_commit|lincheck)|time:|thrpt:" criterion.txt >> "$GITHUB_STEP_SUMMARY" || true

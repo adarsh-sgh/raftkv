@@ -38,51 +38,77 @@ struct MemState {
     entries: Vec<Entry>,
 }
 
-/// In-memory storage with an explicit durability boundary: writes become durable on `sync`,
-/// and [`MemStorage::crash`] throws away everything since. The simulator keeps it across a
-/// node crash (see [`crate::RaftNode::into_storage`]).
+#[derive(Clone, Debug)]
+enum Op {
+    HardState(HardState),
+    Append(Vec<Entry>),
+    Truncate(u64),
+    Snapshot(Snapshot),
+}
+
+impl MemState {
+    fn apply(&mut self, op: Op) {
+        match op {
+            Op::HardState(hs) => self.hs = hs,
+            Op::Append(e) => self.entries.extend(e),
+            Op::Truncate(from) => self.entries.retain(|e| e.index < from),
+            Op::Snapshot(s) => {
+                self.entries.retain(|e| e.index > s.meta.index);
+                self.snapshot = s;
+            }
+        }
+    }
+}
+
+/// In-memory storage with an explicit durability boundary: writes are journaled and become
+/// durable on `sync`; [`MemStorage::crash`] drops the journal. The simulator keeps it across
+/// a node crash (see [`crate::RaftNode::into_storage`]).
 #[derive(Clone, Debug, Default)]
 pub struct MemStorage {
-    state: MemState,
     durable: MemState,
+    pending: Vec<Op>,
     /// Makes `sync` a no-op, to model a crash during fsync.
     pub fail_sync: bool,
 }
 
 impl MemStorage {
-    /// Reverts to the last synced state.
+    /// Loses everything written since the last successful `sync`.
     pub fn crash(&mut self) {
-        self.state = self.durable.clone();
+        self.pending.clear();
         self.fail_sync = false;
     }
 }
 
 impl Storage for MemStorage {
     fn initial_state(&mut self) -> (HardState, Snapshot, Vec<Entry>) {
-        let s = &self.state;
-        (s.hs, s.snapshot.clone(), s.entries.clone())
+        let mut s = self.durable.clone();
+        for op in self.pending.iter().cloned() {
+            s.apply(op);
+        }
+        (s.hs, s.snapshot, s.entries)
     }
 
     fn set_hard_state(&mut self, hs: HardState) {
-        self.state.hs = hs;
+        self.pending.push(Op::HardState(hs));
     }
 
     fn append(&mut self, entries: &[Entry]) {
-        self.state.entries.extend_from_slice(entries);
+        self.pending.push(Op::Append(entries.to_vec()));
     }
 
     fn truncate(&mut self, from: u64) {
-        self.state.entries.retain(|e| e.index < from);
+        self.pending.push(Op::Truncate(from));
     }
 
     fn save_snapshot(&mut self, snap: &Snapshot) {
-        self.state.entries.retain(|e| e.index > snap.meta.index);
-        self.state.snapshot = snap.clone();
+        self.pending.push(Op::Snapshot(snap.clone()));
     }
 
     fn sync(&mut self) {
         if !self.fail_sync {
-            self.durable = self.state.clone();
+            for op in self.pending.drain(..) {
+                self.durable.apply(op);
+            }
         }
     }
 }
