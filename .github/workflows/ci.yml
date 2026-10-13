@@ -1,0 +1,38 @@
+name: ci
+on: [push, pull_request]
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      # SIM_SEEDS: every simulation test runs this many fault schedules.
+      - run: cargo nextest run --workspace --release --profile ci
+        env: { SIM_SEEDS: "512" }
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench -p raft -p lincheck -- --quick --noplot | tee criterion.txt
+      - name: load test (3 nodes in-process)
+        run: |
+          echo "### raftkv-load on $(nproc) vCPU GitHub runner" >> "$GITHUB_STEP_SUMMARY"
+          scripts/load.sh 5 | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: grep -E "^(raft_commit|lincheck)|time:|thrpt:" criterion.txt >> "$GITHUB_STEP_SUMMARY" || true
