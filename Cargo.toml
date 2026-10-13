@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/raft", "crates/kv", "crates/lincheck", "crates/sim"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+raft = { path = "crates/raft" }
+kv = { path = "crates/kv" }
+lincheck = { path = "crates/lincheck" }
+sim = { path = "crates/sim" }
+prost = "0.14"
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+criterion = "0.8"
+crc32fast = "1"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+hdrhistogram = "7"
+protoc-bin-vendored = "3"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.bench]
+debug = true
