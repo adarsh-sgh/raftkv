@@ -31,36 +31,58 @@ pub fn bootstrap<S: Storage>(storage: &mut S, members: Vec<Member>) {
     }
 }
 
-/// In-memory storage. Survives a simulated crash because the simulator keeps it when it
-/// drops the node (see [`crate::RaftNode::into_storage`]).
+#[derive(Clone, Debug, Default)]
+struct MemState {
+    hs: HardState,
+    snapshot: Snapshot,
+    entries: Vec<Entry>,
+}
+
+/// In-memory storage with an explicit durability boundary: writes become durable on `sync`,
+/// and [`MemStorage::crash`] throws away everything since. The simulator keeps it across a
+/// node crash (see [`crate::RaftNode::into_storage`]).
 #[derive(Clone, Debug, Default)]
 pub struct MemStorage {
-    pub hs: HardState,
-    pub snapshot: Snapshot,
-    pub entries: Vec<Entry>,
+    state: MemState,
+    durable: MemState,
+    /// Makes `sync` a no-op, to model a crash during fsync.
+    pub fail_sync: bool,
+}
+
+impl MemStorage {
+    /// Reverts to the last synced state.
+    pub fn crash(&mut self) {
+        self.state = self.durable.clone();
+        self.fail_sync = false;
+    }
 }
 
 impl Storage for MemStorage {
     fn initial_state(&mut self) -> (HardState, Snapshot, Vec<Entry>) {
-        (self.hs, self.snapshot.clone(), self.entries.clone())
+        let s = &self.state;
+        (s.hs, s.snapshot.clone(), s.entries.clone())
     }
 
     fn set_hard_state(&mut self, hs: HardState) {
-        self.hs = hs;
+        self.state.hs = hs;
     }
 
     fn append(&mut self, entries: &[Entry]) {
-        self.entries.extend_from_slice(entries);
+        self.state.entries.extend_from_slice(entries);
     }
 
     fn truncate(&mut self, from: u64) {
-        self.entries.retain(|e| e.index < from);
+        self.state.entries.retain(|e| e.index < from);
     }
 
     fn save_snapshot(&mut self, snap: &Snapshot) {
-        self.entries.retain(|e| e.index > snap.meta.index);
-        self.snapshot = snap.clone();
+        self.state.entries.retain(|e| e.index > snap.meta.index);
+        self.state.snapshot = snap.clone();
     }
 
-    fn sync(&mut self) {}
+    fn sync(&mut self) {
+        if !self.fail_sync {
+            self.durable = self.state.clone();
+        }
+    }
 }

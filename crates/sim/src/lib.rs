@@ -152,6 +152,8 @@ struct Sim {
     now: u64,
     /// Durable state of every node ever started; `nodes` holds the live ones.
     disks: BTreeMap<NodeId, MemStorage>,
+    /// Crashed nodes come back at this tick (kill -9, then restart).
+    restart_at: BTreeMap<NodeId, u64>,
     nodes: BTreeMap<NodeId, Node>,
     next_id: NodeId,
     net: Vec<(u64, u64, Envelope)>,
@@ -183,6 +185,7 @@ impl Sim {
             rng: Rng::new(cfg.seed.wrapping_mul(0x9E37_79B9) ^ 0xDEAD_BEEF),
             now: 0,
             disks: BTreeMap::new(),
+            restart_at: BTreeMap::new(),
             nodes: BTreeMap::new(),
             next_id: cfg.nodes + 1,
             net: Vec::new(),
@@ -226,6 +229,7 @@ impl Sim {
     }
 
     fn start(&mut self, id: NodeId) {
+        self.restart_at.remove(&id);
         let disk = self.disks.remove(&id).expect("disk exists");
         let mut rc = raft::Config::new(id);
         rc.election_ticks = self.cfg.election_ticks;
@@ -246,11 +250,26 @@ impl Sim {
         );
     }
 
-    fn crash(&mut self, id: NodeId) {
-        if let Some(n) = self.nodes.remove(&id) {
-            self.disks.insert(id, n.raft.into_storage());
-            self.stats.crashes += 1;
+    /// Kills a node. With `mid_fsync`, it dies inside its next `ready`: the leader's early
+    /// AppendEntries are already on the wire but its own unsynced writes are lost.
+    fn crash(&mut self, id: NodeId, mid_fsync: bool) {
+        let Some(mut n) = self.nodes.remove(&id) else {
+            return;
+        };
+        if mid_fsync {
+            n.raft.storage_mut().fail_sync = true;
+            let mut early = Vec::new();
+            drop(n.raft.ready_with(|m| early.push(m)));
+            for m in early {
+                self.send(Envelope::Raft(m));
+            }
         }
+        let mut disk = n.raft.into_storage();
+        disk.crash();
+        self.disks.insert(id, disk);
+        self.restart_at
+            .insert(id, self.now + self.rng.range(20, 300));
+        self.stats.crashes += 1;
     }
 
     fn all_ids(&self) -> Vec<NodeId> {
@@ -278,6 +297,13 @@ impl Sim {
                 for id in down {
                     self.start(id);
                 }
+            }
+            let due: Vec<NodeId> = (self.restart_at.iter())
+                .filter(|&(_, &t)| t <= self.now)
+                .map(|(&id, _)| id)
+                .collect();
+            for id in due {
+                self.start(id);
             }
             self.deliver();
             let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
@@ -645,7 +671,8 @@ impl Sim {
                 if self.disks.len() < max_down {
                     let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
                     let id = ids[self.rng.range(0, ids.len() as u64) as usize];
-                    self.crash(id);
+                    let mid_fsync = self.rng.chance(0.5);
+                    self.crash(id, mid_fsync);
                 }
             }
             4 => {

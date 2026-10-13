@@ -93,6 +93,10 @@ pub struct RaftNode<S: Storage> {
     reads: VecDeque<PendingRead>,
 
     out: Vec<Message>,
+    /// Leader appends/snapshots: safe to send before the leader's own log is durable.
+    early: Vec<Message>,
+    /// Last index known durable locally; the leader counts only this towards commit.
+    durable: u64,
     ready_reads: Vec<(u64, u64)>,
     aborted_reads: Vec<u64>,
     snapshot_to_apply: Option<Snapshot>,
@@ -129,6 +133,8 @@ impl<S: Storage> RaftNode<S> {
             read_ctx: 0,
             reads: VecDeque::new(),
             out: Vec::new(),
+            early: Vec::new(),
+            durable: 0,
             ready_reads: Vec::new(),
             aborted_reads: Vec::new(),
             need_broadcast: false,
@@ -136,11 +142,16 @@ impl<S: Storage> RaftNode<S> {
         };
         n.refresh_members();
         n.reset_election_timer();
+        n.durable = n.last_index();
         n
     }
 
     pub fn into_storage(self) -> S {
         self.storage
+    }
+
+    pub fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
     }
 
     pub fn id(&self) -> NodeId {
@@ -350,12 +361,28 @@ impl<S: Storage> RaftNode<S> {
 
     /// Drains outputs. Storage is synced before anything is returned.
     pub fn ready(&mut self) -> Ready {
+        let mut early = Vec::new();
+        let mut rd = self.ready_with(|m| early.push(m));
+        early.append(&mut rd.messages);
+        rd.messages = early;
+        rd
+    }
+
+    /// Like [`Self::ready`], but hands the leader's AppendEntries to `send_early` before
+    /// syncing storage, so replication overlaps the leader's own fsync (thesis §10.2.1). The
+    /// leader counts itself towards commit only up to what is durable.
+    pub fn ready_with(&mut self, mut send_early: impl FnMut(Message)) -> Ready {
         if self.role == Role::Leader && (self.need_heartbeat || self.need_broadcast) {
             self.broadcast_append(self.need_heartbeat);
         }
         self.need_heartbeat = false;
         self.need_broadcast = false;
+        for m in self.early.drain(..) {
+            send_early(m);
+        }
         self.storage.sync();
+        self.durable = self.last_index();
+        self.maybe_commit();
 
         let snapshot = self.snapshot_to_apply.take();
         let mut committed = Vec::new();
@@ -545,7 +572,7 @@ impl<S: Storage> RaftNode<S> {
         if pr.next <= snap_index {
             pr.next = snap_index + 1;
             let snapshot = self.snapshot.clone();
-            return self.send(to, Msg::InstallSnapshot { snapshot });
+            return self.send_early(to, Msg::InstallSnapshot { snapshot });
         }
         let prev_index = pr.next - 1;
         let hi = last.min(prev_index + self.cfg.max_append_entries as u64);
@@ -560,7 +587,7 @@ impl<S: Storage> RaftNode<S> {
             commit: self.commit,
             ctx: self.read_ctx,
         };
-        self.send(to, msg);
+        self.send_early(to, msg);
     }
 
     fn handle_append(
@@ -718,7 +745,7 @@ impl<S: Storage> RaftNode<S> {
             .iter()
             .map(|m| {
                 if m.id == self.cfg.id {
-                    last
+                    self.durable.min(last)
                 } else {
                     self.progress.get(&m.id).map_or(0, |p| p.matched)
                 }
@@ -861,6 +888,15 @@ impl<S: Storage> RaftNode<S> {
         self.storage.set_hard_state(HardState {
             term: self.term,
             vote: self.vote,
+        });
+    }
+
+    fn send_early(&mut self, to: NodeId, msg: Msg) {
+        self.early.push(Message {
+            from: self.cfg.id,
+            to,
+            term: self.term,
+            msg,
         });
     }
 
