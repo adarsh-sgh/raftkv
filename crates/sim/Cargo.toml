@@ -1,0 +1,17 @@
+[package]
+name = "sim"
+description = "Deterministic cluster simulator with fault injection (Jepsen-style)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+raft.workspace = true
+kv.workspace = true
+lincheck.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+bench = false
