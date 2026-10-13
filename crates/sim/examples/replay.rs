@@ -1,3 +1,6 @@
+//! Replays one simulation: `cargo run --release -p sim --example replay -- <seed> [nofaults]`.
+//! Runs are deterministic, so a failing seed from CI reproduces exactly.
+
 fn main() {
     let seed: u64 = std::env::args()
         .nth(1)
