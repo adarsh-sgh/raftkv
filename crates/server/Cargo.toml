@@ -1,0 +1,32 @@
+[package]
+name = "raftkv"
+description = "Raft-replicated key-value store over gRPC"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+raft.workspace = true
+kv.workspace = true
+prost.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+crc32fast.workspace = true
+clap.workspace = true
+hdrhistogram.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+lincheck.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+protoc-bin-vendored.workspace = true
+
+[lib]
+bench = false
+
+[lints]
+workspace = true

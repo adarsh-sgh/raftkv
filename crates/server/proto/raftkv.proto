@@ -1,0 +1,127 @@
+syntax = "proto3";
+package raftkv;
+
+// Client API. Errors: FAILED_PRECONDITION with `x-leader` metadata (leader address, when
+// known) if the node is not the leader; UNAVAILABLE if it cannot serve right now.
+service Kv {
+  // Linearizable read via ReadIndex.
+  rpc Get(GetRequest) returns (GetResponse);
+  // Put, delete (value unset) or compare-and-set. (client, seq) makes retries exactly-once.
+  rpc Write(WriteRequest) returns (WriteResponse);
+}
+
+service Admin {
+  rpc AddMember(Member) returns (StatusResponse);
+  rpc RemoveMember(RemoveMemberRequest) returns (StatusResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+// Peer transport: each node keeps one client stream open to every peer.
+service Raft {
+  rpc Send(stream RaftMessage) returns (Empty);
+}
+
+message Empty {}
+
+message GetRequest { bytes key = 1; }
+message GetResponse { optional bytes value = 1; }
+
+message WriteRequest {
+  uint64 client = 1;
+  uint64 seq = 2;
+  bytes key = 3;
+  optional bytes value = 4;
+  bool cas = 5;
+  optional bytes expected = 6;
+}
+message WriteResponse {
+  bool ok = 1;
+  optional bytes prev = 2;
+}
+
+message Member {
+  uint64 id = 1;
+  string addr = 2;
+}
+message RemoveMemberRequest { uint64 id = 1; }
+message StatusRequest {}
+message StatusResponse {
+  uint64 id = 1;
+  string role = 2;
+  uint64 term = 3;
+  uint64 leader = 4;
+  uint64 commit = 5;
+  uint64 applied = 6;
+  uint64 last_index = 7;
+  uint64 snapshot_index = 8;
+  repeated Member members = 9;
+  uint64 snapshots_sent = 10;
+  uint64 snapshots_installed = 11;
+  uint64 keys = 12;
+}
+
+// ---- Raft wire and disk format ----
+
+message Config { repeated Member members = 1; }
+
+message Entry {
+  uint64 term = 1;
+  uint64 index = 2;
+  oneof payload {
+    bool noop = 3;
+    bytes command = 4;
+    Config config = 5;
+  }
+}
+
+message HardState {
+  uint64 term = 1;
+  optional uint64 vote = 2;
+}
+
+message SnapshotMeta {
+  uint64 index = 1;
+  uint64 term = 2;
+  repeated Member members = 3;
+}
+message Snapshot {
+  SnapshotMeta meta = 1;
+  bytes data = 2;
+}
+
+message Vote {
+  uint64 last_index = 1;
+  uint64 last_term = 2;
+  bool pre = 3;
+}
+message VoteResp {
+  bool granted = 1;
+  bool pre = 2;
+}
+message Append {
+  uint64 prev_index = 1;
+  uint64 prev_term = 2;
+  repeated Entry entries = 3;
+  uint64 commit = 4;
+  uint64 ctx = 5;
+}
+message AppendResp {
+  bool success = 1;
+  uint64 index = 2;
+  uint64 ctx = 3;
+}
+
+message RaftMessage {
+  uint64 from = 1;
+  uint64 to = 2;
+  uint64 term = 3;
+  // Lets a node reply to peers it has no config entry for yet (e.g. while joining).
+  string from_addr = 4;
+  oneof msg {
+    Vote vote = 5;
+    VoteResp vote_resp = 6;
+    Append append = 7;
+    AppendResp append_resp = 8;
+    Snapshot install_snapshot = 9;
+  }
+}
